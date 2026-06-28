@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: stg_orders
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+      - name: batch_date
+        tests:
+          - not_null
+
+  - name: stg_order_items
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+      - name: seller_id
+        tests:
+          - not_null
+      - name: batch_date
+        tests:
+          - not_null
+
+  - name: stg_payments
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+      - name: batch_date
+        tests:
+          - not_null
+
+  - name: stg_reviews
+    columns:
+      - name: review_id
+        tests:
+          - not_null
+          - unique
+      - name: order_id
+        tests:
+          - not_null
+      - name: batch_date
+        tests:
+          - not_null
+
+  - name: mart_supplier_risk_snapshot
+    columns:
+      - name: snapshot_date
+        tests:
+          - not_null
+      - name: seller_id
+        tests:
+          - not_null
+      - name: risk_level
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['high', 'medium', 'low']

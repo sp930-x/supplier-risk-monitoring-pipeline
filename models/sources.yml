@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: raw
+    database: SUPPLIER_RISK
+    schema: RAW
+    tables:
+      - name: synthetic_orders
+        identifier: RAW_SYNTHETIC_ORDERS
+      - name: synthetic_order_items
+        identifier: RAW_SYNTHETIC_ORDER_ITEMS
+      - name: synthetic_payments
+        identifier: RAW_SYNTHETIC_PAYMENTS
+      - name: synthetic_reviews
+        identifier: RAW_SYNTHETIC_REVIEWS
+

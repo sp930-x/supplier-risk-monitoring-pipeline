@@ -1,0 +1,29 @@
+# Secrets / local config
+.env
+.dbt/
+*.key
+*.pem
+
+# Local data
+data/
+
+# dbt artifacts
+target/
+dbt_packages/
+logs/
+
+# Temporary test files
+orders_before.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

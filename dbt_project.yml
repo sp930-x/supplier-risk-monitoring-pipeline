@@ -1,0 +1,14 @@
+name: supplier_risk
+version: "1.0.0"
+config-version: 2
+
+profile: supplier_risk
+
+model-paths: ["models"]
+
+models:
+  supplier_risk:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
