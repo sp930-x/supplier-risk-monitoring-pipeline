@@ -28,4 +28,5 @@ venv/
 Thumbs.db
 .vscode/
 
-dags/
+config/
+plugins/
