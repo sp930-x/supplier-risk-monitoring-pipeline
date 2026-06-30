@@ -65,12 +65,16 @@ def batch_dates(start_date: str) -> list[str]:
 
 @dag(
     dag_id=DAG_ID,
-    # Every day at 03:00, process the completed daily interval.
-    schedule="0 3 * * *",
-    start_date=pendulum.datetime(2026, 6, 1, 3, tz="Europe/Berlin"),
+    # Every morning at 09:00, process the completed previous calendar day.
+    schedule="0 9 * * *",
+    start_date=pendulum.datetime(2026, 6, 1, 9, tz="Europe/Berlin"),
     catchup=False,
     max_active_runs=1,
-    default_args={"owner": "supplier-risk", "retries": 2, "retry_delay": timedelta(minutes=5)},
+    default_args={
+        "owner": "supplier-risk",
+        "retries": 2,
+        "retry_delay": timedelta(minutes=5),
+    },
     tags=["supplier-risk", "synthetic-data", "daily"],
     description="Generate, validate, and ingest one daily supplier risk batch.",
 )
@@ -129,9 +133,13 @@ def supplier_risk_daily_pipeline():
     def test_dbt_models() -> None:
         run_command("dbt", "test")
 
-    # Use the scheduled run date as the synthetic batch date.
-    # For the 03:00 Europe/Berlin run on 2026-06-29, this creates batch_date=2026-06-29.
-    batch_date = "{{ logical_date.in_timezone('Europe/Berlin') | ds }}"
+    # Use the completed previous day as the synthetic batch date.
+    # This keeps both scheduled runs and manual UI triggers from creating today's partial data.
+    # For a 2026-07-01 09:00 Europe/Berlin run, this creates batch_date=2026-06-30.
+    batch_date = (
+        "{{ (data_interval_end.in_timezone('Europe/Berlin') "
+        "- macros.timedelta(days=1)) | ds }}"
+    )
     generated_start = generate_day(batch_date)
     validated_start = validate_day(generated_start)
     loaded_start = load_day(validated_start)
