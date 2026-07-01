@@ -13,7 +13,7 @@ The project builds the full data flow from raw event generation to an analytics 
 - runs dbt tests to check the analytical models
 - visualizes the final supplier risk mart in a local Streamlit dashboard
 
-The main output is a daily supplier risk snapshot table that helps answer:
+The main output is a daily supplier risk snapshot table that supports a weekly reporting dashboard and helps answer:
 
 - Which suppliers are currently high risk?
 - Are high-risk suppliers increasing or decreasing over time?
@@ -225,13 +225,15 @@ streamlit run dashboard/app.py
 
 The dashboard includes:
 
-- sidebar filters for `snapshot_date`, `risk_level`, and minimum total orders
-- KPI cards for supplier snapshots, unique suppliers, high-risk suppliers, average risk score, and open overdue orders
+- sidebar filters for report week, `risk_level`, and minimum total orders
+- KPI cards for reporting days, unique suppliers, high-risk suppliers, average risk score, and open overdue orders
 - current risk level distribution chart
-- high-risk suppliers over time chart
-- average risk score over time chart
-- delayed order value over time chart
-- Suppliers Requiring Attention table for high-risk suppliers on the selected snapshot date
+- high-risk suppliers at week-end snapshot chart
+- average risk score at week-end snapshot chart
+- delayed order value at week-end snapshot chart
+- Suppliers Requiring Attention table for high-risk suppliers on the selected report week's latest snapshot
+
+The report week uses `Week 1`, `Week 2`, and similar labels in charts, with the date range shown in the filter and chart hover details. Each week uses the latest available daily snapshot in that week as the week-end view. This keeps the underlying mart daily while presenting the dashboard in a weekly reporting format.
 
 The dashboard reads from the final dbt mart table in Snowflake. The mart is refreshed by the Airflow pipeline.
 

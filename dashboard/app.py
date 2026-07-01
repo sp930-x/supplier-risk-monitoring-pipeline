@@ -1,5 +1,5 @@
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -75,6 +75,20 @@ def load_supplier_risk_data() -> pd.DataFrame:
 
     # Keep dates and numeric fields predictable for filtering, KPIs, and charts.
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
+    snapshot_dates = pd.to_datetime(df["snapshot_date"])
+    df["week_start"] = (
+        snapshot_dates - pd.to_timedelta(snapshot_dates.dt.weekday, unit="D")
+    ).dt.date
+    df["week_end"] = (pd.to_datetime(df["week_start"]) + pd.Timedelta(days=6)).dt.date
+    df["report_week"] = (
+        df["week_start"].astype(str) + " to " + df["week_end"].astype(str)
+    )
+    week_numbers = (
+        pd.DataFrame({"week_start": sorted(df["week_start"].unique())})
+        .assign(report_week_number=lambda weeks: range(1, len(weeks) + 1))
+    )
+    df = df.merge(week_numbers, on="week_start", how="left")
+    df["report_week_label"] = "Week " + df["report_week_number"].astype(str)
 
     numeric_columns = [
         "total_orders",
@@ -113,14 +127,24 @@ def build_sidebar_filters(df: pd.DataFrame) -> tuple[date, list[str], int]:
     """Create sidebar filters and return the selected values."""
     st.sidebar.header("Filters")
 
-    available_dates = sorted(df["snapshot_date"].unique())
-    latest_snapshot_date = max(available_dates)
-    latest_snapshot_index = available_dates.index(latest_snapshot_date)
+    available_weeks = (
+        df[["week_start", "week_end", "report_week", "report_week_label"]]
+        .drop_duplicates()
+        .sort_values("week_start")
+    )
+    week_starts = available_weeks["week_start"].tolist()
+    week_label_by_start = dict(
+        zip(
+            available_weeks["week_start"],
+            available_weeks["report_week_label"] + " (" + available_weeks["report_week"] + ")",
+        )
+    )
 
-    selected_snapshot_date = st.sidebar.selectbox(
-        "snapshot_date",
-        options=available_dates,
-        index=latest_snapshot_index,
+    selected_week_start = st.sidebar.selectbox(
+        "report_week",
+        options=week_starts,
+        index=len(week_starts) - 1,
+        format_func=lambda value: week_label_by_start[value],
     )
 
     available_risk_levels = get_ordered_risk_levels(df)
@@ -140,19 +164,24 @@ def build_sidebar_filters(df: pd.DataFrame) -> tuple[date, list[str], int]:
         step=1,
     )
 
-    return selected_snapshot_date, selected_risk_levels, min_total_orders
+    return selected_week_start, selected_risk_levels, min_total_orders
 
 
-def show_kpis(df: pd.DataFrame) -> None:
-    """Show KPI cards for the selected snapshot date."""
-    supplier_snapshots = len(df)
+def get_week_end_snapshot(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the latest available daily snapshot inside each reporting week."""
+    latest_dates = df.groupby("week_start", as_index=False)["snapshot_date"].max()
+    return df.merge(latest_dates, on=["week_start", "snapshot_date"], how="inner")
+
+
+def show_kpis(df: pd.DataFrame, reporting_days: int) -> None:
+    """Show KPI cards for the selected reporting week."""
     unique_suppliers = df["seller_id"].nunique()
     high_risk_suppliers = len(df[df["risk_level"] == "high"])
     average_risk_score = df["risk_score"].mean() if not df.empty else 0
     overdue_open_orders = int(df["overdue_open_orders"].sum())
 
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Supplier snapshots", f"{supplier_snapshots:,}")
+    col1.metric("Reporting days", f"{reporting_days:,}")
     col2.metric("Unique suppliers", f"{unique_suppliers:,}")
     col3.metric("High-risk suppliers", f"{high_risk_suppliers:,}")
     col4.metric("Average risk score", f"{average_risk_score:.3f}")
@@ -189,64 +218,87 @@ def show_risk_distribution(df: pd.DataFrame) -> None:
 
 
 def show_trend_charts(df: pd.DataFrame) -> None:
-    """Build trend charts from all available snapshot dates."""
-    all_snapshot_dates = pd.DataFrame(
-        {"snapshot_date": sorted(df["snapshot_date"].unique())}
+    """Build weekly trend charts from week-end snapshots."""
+    week_end_snapshots = get_week_end_snapshot(df)
+    all_weeks = pd.DataFrame(
+        {
+            "week_start": sorted(week_end_snapshots["week_start"].unique())
+        }
     )
+    week_labels = (
+        week_end_snapshots[["week_start", "report_week", "report_week_label"]]
+        .drop_duplicates()
+        .sort_values("week_start")
+    )
+    all_weeks = all_weeks.merge(week_labels, on="week_start", how="left")
 
-    # Count high-risk suppliers per day and keep zero-count days visible.
+    # Count high-risk suppliers per report week and keep zero-count weeks visible.
     high_risk_over_time = (
-        df[df["risk_level"] == "high"]
-        .groupby("snapshot_date", as_index=False)
+        week_end_snapshots[week_end_snapshots["risk_level"] == "high"]
+        .groupby("week_start", as_index=False)
         .size()
         .rename(columns={"size": "high_risk_suppliers"})
     )
-    high_risk_over_time = all_snapshot_dates.merge(
+    high_risk_over_time = all_weeks.merge(
         high_risk_over_time,
-        on="snapshot_date",
+        on="week_start",
         how="left",
     ).fillna({"high_risk_suppliers": 0})
 
     high_risk_chart = px.line(
         high_risk_over_time,
-        x="snapshot_date",
+        x="report_week_label",
         y="high_risk_suppliers",
         markers=True,
-        title="High-risk suppliers over time",
+        title="High-risk suppliers at week-end snapshot",
+        hover_data={"report_week": True, "report_week_label": False},
         labels={
-            "snapshot_date": "Snapshot date",
+            "report_week_label": "Report week",
+            "report_week": "Date range",
             "high_risk_suppliers": "High-risk suppliers",
         },
     )
     st.plotly_chart(high_risk_chart, use_container_width=True)
 
-    average_risk_score_over_time = df.groupby("snapshot_date", as_index=False)[
+    average_risk_score_over_time = week_end_snapshots.groupby(
+        ["week_start", "report_week", "report_week_label"],
+        as_index=False,
+    )[
         "risk_score"
     ].mean()
+    average_risk_score_over_time = average_risk_score_over_time.sort_values("week_start")
     average_risk_score_chart = px.line(
         average_risk_score_over_time,
-        x="snapshot_date",
+        x="report_week_label",
         y="risk_score",
         markers=True,
-        title="Average risk score over time",
+        title="Average risk score at week-end snapshot",
+        hover_data={"report_week": True, "report_week_label": False},
         labels={
-            "snapshot_date": "Snapshot date",
+            "report_week_label": "Report week",
+            "report_week": "Date range",
             "risk_score": "Average risk score",
         },
     )
     st.plotly_chart(average_risk_score_chart, use_container_width=True)
 
-    delayed_order_value_over_time = df.groupby("snapshot_date", as_index=False)[
+    delayed_order_value_over_time = week_end_snapshots.groupby(
+        ["week_start", "report_week", "report_week_label"],
+        as_index=False,
+    )[
         "delayed_order_value"
     ].sum()
+    delayed_order_value_over_time = delayed_order_value_over_time.sort_values("week_start")
     delayed_order_value_chart = px.line(
         delayed_order_value_over_time,
-        x="snapshot_date",
+        x="report_week_label",
         y="delayed_order_value",
         markers=True,
-        title="Delayed order value over time",
+        title="Delayed order value at week-end snapshot",
+        hover_data={"report_week": True, "report_week_label": False},
         labels={
-            "snapshot_date": "Snapshot date",
+            "report_week_label": "Report week",
+            "report_week": "Date range",
             "delayed_order_value": "Delayed order value",
         },
     )
@@ -313,15 +365,15 @@ def show_suppliers_requiring_attention(df: pd.DataFrame) -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Supplier Risk Monitoring Dashboard",
+        page_title="Supplier Risk Weekly Report",
         layout="wide",
     )
 
-    st.title("Supplier Risk Monitoring Dashboard")
+    st.title("Supplier Risk Weekly Report")
     st.write(
-        "This dashboard monitors supplier risk using daily supplier risk snapshots. "
-        "It helps identify suppliers with repeated delivery delays, low review scores, "
-        "and high delayed order value."
+        "This weekly report summarizes supplier risk from daily supplier risk snapshots. "
+        "It highlights suppliers with repeated delivery delays, open overdue orders, "
+        "low review scores, and high delayed order value."
     )
     st.info(
         "The dashboard reads from the final dbt mart table in Snowflake. "
@@ -339,36 +391,44 @@ def main() -> None:
         st.stop()
 
     (
-        selected_snapshot_date,
+        selected_week_start,
         selected_risk_levels,
         min_total_orders,
     ) = build_sidebar_filters(df)
 
-    selected_snapshot_df = df[df["snapshot_date"] == selected_snapshot_date]
-    current_risk_df = selected_snapshot_df[
-        selected_snapshot_df["risk_level"].isin(selected_risk_levels)
+    selected_week_df = df[df["week_start"] == selected_week_start]
+    selected_week_end = selected_week_start + timedelta(days=6)
+    report_snapshot_date = max(selected_week_df["snapshot_date"])
+    report_snapshot_df = selected_week_df[
+        selected_week_df["snapshot_date"] == report_snapshot_date
+    ]
+    current_risk_df = report_snapshot_df[
+        report_snapshot_df["risk_level"].isin(selected_risk_levels)
     ]
 
     if current_risk_df.empty:
-        st.warning("No supplier risk snapshots match the selected filters.")
+        st.warning("No supplier risk snapshots match the selected weekly filters.")
         st.stop()
 
-    st.header("Current Risk Overview")
-    st.caption(f"Selected snapshot date: {selected_snapshot_date}")
-    show_kpis(current_risk_df)
+    st.header("Weekly Risk Overview")
+    st.caption(
+        f"Report week: {selected_week_start} to {selected_week_end}. "
+        f"Week-end snapshot: {report_snapshot_date}."
+    )
+    show_kpis(current_risk_df, selected_week_df["snapshot_date"].nunique())
     show_risk_distribution(current_risk_df)
 
-    st.header("Risk Trends Over Time")
+    st.header("Weekly Risk Trends")
     show_trend_charts(df)
 
     st.header("Suppliers Requiring Attention")
     st.caption(
-        "Showing high-risk suppliers on the selected snapshot date "
+        "Showing high-risk suppliers on the selected report week's latest snapshot "
         f"with at least {min_total_orders} total orders."
     )
-    attention_df = selected_snapshot_df[
-        (selected_snapshot_df["risk_level"] == "high")
-        & (selected_snapshot_df["total_orders"] >= min_total_orders)
+    attention_df = report_snapshot_df[
+        (report_snapshot_df["risk_level"] == "high")
+        & (report_snapshot_df["total_orders"] >= min_total_orders)
     ]
     show_suppliers_requiring_attention(attention_df)
 
