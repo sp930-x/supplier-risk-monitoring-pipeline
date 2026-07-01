@@ -73,6 +73,41 @@ The supplier risk model counts both already late deliveries and currently overdu
 
 Future improvement: model order lifecycle updates across days by allowing the same `order_id` to appear in multiple daily snapshots as its status changes from `processing` to `shipped`, `overdue`, `delivered`, and `reviewed`.
 
+## Supplier Risk Scoring
+
+The supplier risk score is a transparent baseline score, not a trained statistical model.
+
+It combines three normalized components:
+
+- delivery risk: share of orders that were delivered late or are currently overdue
+- review risk: share of reviewed orders with low review scores
+- value exposure risk: share of order value tied to late or currently overdue orders
+
+The current formula is:
+
+```text
+risk_score =
+    late_delivery_rate * 0.4
+  + low_review_rate * 0.3
+  + delayed_order_value_share * 0.3
+```
+
+Risk levels are assigned with simple threshold rules:
+
+- `high`: `risk_score >= 0.7`
+- `medium`: `risk_score >= 0.4` and `< 0.7`
+- `low`: `risk_score < 0.4`
+
+The weights and thresholds are domain-informed heuristics for a monitoring dashboard. Delivery performance receives the highest weight because the use case focuses on supplier delivery reliability. Review risk is included because repeated low reviews can indicate customer-facing quality issues. Value exposure is included to prioritize delivery problems that affect more business value.
+
+The `high` threshold of `0.7` is intended to flag suppliers with multiple strong risk signals at the same time, for example a high late-or-overdue delivery rate combined with low reviews or high delayed order value exposure. The `medium` threshold of `0.4` catches suppliers with one strong signal or several moderate signals that may need monitoring but not immediate escalation.
+
+There is intentional overlap between delivery risk and value exposure risk: both are affected by late or overdue orders. They answer different business questions, though. `late_delivery_rate` measures how often a supplier has delivery problems, while `delayed_order_value_share` measures how much order value is exposed to those problems. A supplier with a few delayed high-value orders can therefore be prioritized differently from a supplier with many delayed low-value orders.
+
+Review-based risk can be noisy when a supplier has only a few reviewed orders. The dashboard includes total order and reviewed order counts so small-sample cases can be interpreted with caution rather than treated as definitive supplier quality signals.
+
+In a production setting, these weights and thresholds should be calibrated with historical outcomes, business impact, and stakeholder tolerance for false positives. For this project, the scoring logic is kept simple and explainable so the pipeline and dashboard can be reviewed end to end.
+
 ## Project Structure
 
 ```text
