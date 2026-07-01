@@ -179,8 +179,22 @@ def validate_batch(batch_dir: Path) -> None:
 
     # 9. Date validation
     orders["order_purchase_timestamp"] = pd.to_datetime(orders["order_purchase_timestamp"])
-    orders["order_delivered_customer_date"] = pd.to_datetime(orders["order_delivered_customer_date"])
+    orders["order_approved_at"] = pd.to_datetime(orders["order_approved_at"], errors="coerce")
+    orders["order_delivered_carrier_date"] = pd.to_datetime(
+        orders["order_delivered_carrier_date"],
+        errors="coerce",
+    )
+    orders["order_delivered_customer_date"] = pd.to_datetime(
+        orders["order_delivered_customer_date"],
+        errors="coerce",
+    )
     orders["order_estimated_delivery_date"] = pd.to_datetime(orders["order_estimated_delivery_date"])
+    reviews["review_creation_date"] = pd.to_datetime(reviews["review_creation_date"], errors="coerce")
+    reviews["review_answer_timestamp"] = pd.to_datetime(
+        reviews["review_answer_timestamp"],
+        errors="coerce",
+    )
+    batch_end = pd.Timestamp(batch_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
     invalid_delivery_dates = (
         orders["order_delivered_customer_date"] < orders["order_purchase_timestamp"]
@@ -188,6 +202,63 @@ def validate_batch(batch_dir: Path) -> None:
 
     if invalid_delivery_dates > 0:
         fail(f"{invalid_delivery_dates} orders have delivery date before purchase timestamp")
+
+    future_purchases = (orders["order_purchase_timestamp"] > batch_end).sum()
+
+    if future_purchases > 0:
+        fail(f"{future_purchases} orders have purchase timestamp after batch_date")
+
+    future_approvals = (orders["order_approved_at"] > batch_end).sum()
+
+    if future_approvals > 0:
+        fail(f"{future_approvals} orders have approval timestamp after batch_date")
+
+    future_carrier_dates = (orders["order_delivered_carrier_date"] > batch_end).sum()
+
+    if future_carrier_dates > 0:
+        fail(f"{future_carrier_dates} orders have carrier delivery date after batch_date")
+
+    future_deliveries = (
+        orders["order_delivered_customer_date"].notna()
+        & (orders["order_delivered_customer_date"] > batch_end)
+    ).sum()
+
+    if future_deliveries > 0:
+        fail(f"{future_deliveries} orders have delivery date after batch_date")
+
+    future_reviews = (reviews["review_creation_date"] > batch_end).sum()
+
+    if future_reviews > 0:
+        fail(f"{future_reviews} reviews have review_creation_date after batch_date")
+
+    future_review_answers = (reviews["review_answer_timestamp"] > batch_end).sum()
+
+    if future_review_answers > 0:
+        fail(f"{future_review_answers} reviews have review_answer_timestamp after batch_date")
+
+    delivered_order_ids = set(
+        orders.loc[orders["order_delivered_customer_date"].notna(), "order_id"]
+    )
+    undelivered_review_orders = set(reviews["order_id"]) - delivered_order_ids
+
+    if undelivered_review_orders:
+        fail(f"reviews exist for {len(undelivered_review_orders)} undelivered orders")
+
+    invalid_delivered_status = (
+        (orders["order_status"] == "delivered")
+        & orders["order_delivered_customer_date"].isna()
+    ).sum()
+
+    if invalid_delivered_status > 0:
+        fail(f"{invalid_delivered_status} delivered orders have no delivery date")
+
+    invalid_open_status = (
+        (orders["order_status"] != "delivered")
+        & orders["order_delivered_customer_date"].notna()
+    ).sum()
+
+    if invalid_open_status > 0:
+        fail(f"{invalid_open_status} open orders have delivery dates")
 
     # 10. batch_date validation
     for table_name, df in {

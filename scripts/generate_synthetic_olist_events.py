@@ -187,6 +187,7 @@ def generate_batch(
     """
     rng = np.random.default_rng(seed)
     batch_dt = datetime.strptime(batch_date, "%Y-%m-%d")
+    snapshot_end = batch_dt + timedelta(days=1) - timedelta(seconds=1)
 
     seller_ids = seller_profiles["seller_id"].to_numpy()
     seller_probs = seller_profiles["order_sampling_probability"].to_numpy()
@@ -217,12 +218,8 @@ def generate_batch(
         delay_severity = float(profile["delay_severity"])
         risk_cluster = profile["risk_cluster"]
 
-        purchase_ts = batch_dt + timedelta(minutes=int(rng.integers(0, 1440)))
-        approved_at = purchase_ts + timedelta(hours=float(rng.uniform(0.2, 12)))
-
-        estimated_delivery_days = int(rng.integers(7, 21))
-        estimated_delivery_date = purchase_ts + timedelta(days=estimated_delivery_days)
-
+        estimated_delivery_days = int(rng.integers(3, 15))
+        is_delivered = rng.random() < 0.72
         is_delayed = rng.random() < delay_probability
 
         if is_delayed:
@@ -233,13 +230,50 @@ def generate_batch(
             # Sometimes orders arrive earlier than estimated.
             delay_days = int(rng.choice([-3, -2, -1, 0], p=[0.10, 0.20, 0.30, 0.40]))
 
-        delivered_customer_date = estimated_delivery_date + timedelta(days=delay_days)
+        actual_delivery_days = max(1, estimated_delivery_days + delay_days)
 
+        if is_delivered:
+            review_lag_days = int(rng.integers(1, 6))
+            delivered_age_days = int(rng.integers(review_lag_days, review_lag_days + 15))
+            delivered_customer_date = batch_dt - timedelta(days=delivered_age_days)
+            delivered_customer_date = delivered_customer_date + timedelta(
+                minutes=int(rng.integers(0, 1440))
+            )
+            purchase_ts = delivered_customer_date - timedelta(days=actual_delivery_days)
+            order_status = "delivered"
+        else:
+            is_overdue_open = rng.random() < min(0.85, delay_probability + 0.20)
+
+            if is_overdue_open:
+                overdue_days = int(rng.integers(1, 10))
+                estimated_delivery_date = batch_dt - timedelta(days=overdue_days)
+                estimated_delivery_date = estimated_delivery_date + timedelta(
+                    minutes=int(rng.integers(0, 1440))
+                )
+                order_status = "shipped"
+            else:
+                max_future_days = min(9, estimated_delivery_days)
+                future_days = int(rng.integers(0, max_future_days + 1))
+                estimated_delivery_date = batch_dt + timedelta(days=future_days)
+                estimated_delivery_date = estimated_delivery_date + timedelta(
+                    minutes=int(rng.integers(0, 1440))
+                )
+                order_status = str(rng.choice(["processing", "shipped"], p=[0.45, 0.55]))
+
+            purchase_ts = estimated_delivery_date - timedelta(days=estimated_delivery_days)
+            delivered_customer_date = None
+
+        approved_at = min(
+            purchase_ts + timedelta(hours=float(rng.uniform(0.2, 12))),
+            snapshot_end,
+        )
         delivered_carrier_date = purchase_ts + timedelta(days=int(rng.integers(1, 5)))
+        estimated_delivery_date = purchase_ts + timedelta(days=estimated_delivery_days)
 
-        # Ensure actual customer delivery is after carrier handover.
-        if delivered_customer_date <= delivered_carrier_date:
-            delivered_customer_date = delivered_carrier_date + timedelta(days=int(rng.integers(1, 5)))
+        if delivered_carrier_date > snapshot_end:
+            delivered_carrier_date = None
+        elif is_delivered and delivered_customer_date is not None and delivered_customer_date <= delivered_carrier_date:
+            delivered_carrier_date = delivered_customer_date - timedelta(days=1)
 
         # One order can have multiple items, but keep it simple: same seller per order.
         n_items = int(rng.choice([1, 2, 3], p=[0.82, 0.15, 0.03]))
@@ -274,14 +308,12 @@ def generate_batch(
         )
 
         review_score = pick_review_score(rng, delay_days)
-        review_creation_date = delivered_customer_date + timedelta(days=int(rng.integers(1, 8)))
-        review_answer_timestamp = review_creation_date + timedelta(days=int(rng.integers(0, 5)))
 
         orders_rows.append(
             {
                 "order_id": order_id,
                 "customer_id": customer_id,
-                "order_status": "delivered",
+                "order_status": order_status,
                 "order_purchase_timestamp": purchase_ts,
                 "order_approved_at": approved_at,
                 "order_delivered_carrier_date": delivered_carrier_date,
@@ -304,24 +336,44 @@ def generate_batch(
             }
         )
 
-        reviews_rows.append(
-            {
-                "review_id": deterministic_id("review", batch_date, order_idx, order_id),
-                "order_id": order_id,
-                "review_score": review_score,
-                "review_comment_title": None,
-                "review_comment_message": None,
-                "review_creation_date": review_creation_date,
-                "review_answer_timestamp": review_answer_timestamp,
-                "source_type": "synthetic",
-                "batch_date": batch_date,
-            }
-        )
+        if delivered_customer_date is not None:
+            review_creation_date = delivered_customer_date + timedelta(
+                days=int(rng.integers(1, 6))
+            )
+            review_answer_timestamp = review_creation_date + timedelta(days=int(rng.integers(0, 5)))
+
+            if review_creation_date <= snapshot_end:
+                reviews_rows.append(
+                    {
+                        "review_id": deterministic_id("review", batch_date, order_idx, order_id),
+                        "order_id": order_id,
+                        "review_score": review_score,
+                        "review_comment_title": None,
+                        "review_comment_message": None,
+                        "review_creation_date": review_creation_date,
+                        "review_answer_timestamp": min(review_answer_timestamp, snapshot_end),
+                        "source_type": "synthetic",
+                        "batch_date": batch_date,
+                    }
+                )
 
     orders = pd.DataFrame(orders_rows)
     order_items = pd.DataFrame(order_items_rows)
     payments = pd.DataFrame(payments_rows)
-    reviews = pd.DataFrame(reviews_rows)
+    reviews = pd.DataFrame(
+        reviews_rows,
+        columns=[
+            "review_id",
+            "order_id",
+            "review_score",
+            "review_comment_title",
+            "review_comment_message",
+            "review_creation_date",
+            "review_answer_timestamp",
+            "source_type",
+            "batch_date",
+        ],
+    )
 
     orders = format_datetime_columns(
         orders,

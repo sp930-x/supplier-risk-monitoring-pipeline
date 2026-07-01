@@ -44,14 +44,34 @@ The final mart has one row per `snapshot_date` and `seller_id`.
 It includes supplier-level metrics such as:
 
 - total orders
-- late delivery rate
+- late or currently overdue delivery rate
+- open overdue orders
 - average delay days
+- reviewed orders
 - average review score
 - delayed order value
 - risk score
 - risk level: `high`, `medium`, or `low`
 
 The mart uses a rolling 7-day window so each supplier snapshot reflects recent operational behavior rather than only one isolated day.
+
+## Data Design Notes
+
+`batch_date` is used as a daily observation date, also called a snapshot date.
+
+Each generated batch represents the supplier-relevant order states that are observable on that date. It is not intended to be a full order lifecycle history for every individual `order_id`.
+
+The generator follows these rules:
+
+- `order_purchase_timestamp`, `order_approved_at`, carrier handoff dates, actual delivery dates, and review dates must not be after `batch_date`
+- `order_estimated_delivery_date` may be after `batch_date`, because an estimated delivery date can be known before delivery happens
+- undelivered orders have an empty `order_delivered_customer_date`
+- undelivered orders whose estimated delivery date is before `batch_date` are treated as currently overdue
+- reviews are generated only for orders that have already been delivered by the snapshot date
+
+The supplier risk model counts both already late deliveries and currently overdue open orders as delivery risk. Review-based risk is calculated from orders that already have reviews.
+
+Future improvement: model order lifecycle updates across days by allowing the same `order_id` to appear in multiple daily snapshots as its status changes from `processing` to `shipped`, `overdue`, `delivered`, and `reviewed`.
 
 ## Project Structure
 
@@ -206,7 +226,7 @@ streamlit run dashboard/app.py
 The dashboard includes:
 
 - sidebar filters for `snapshot_date`, `risk_level`, and minimum total orders
-- KPI cards for supplier snapshots, unique suppliers, high-risk suppliers, average risk score, and delayed order value
+- KPI cards for supplier snapshots, unique suppliers, high-risk suppliers, average risk score, and open overdue orders
 - current risk level distribution chart
 - high-risk suppliers over time chart
 - average risk score over time chart
@@ -220,6 +240,8 @@ The dashboard reads from the final dbt mart table in Snowflake. The mart is refr
 The pipeline is designed to be rerun safely for the same `batch_date`.
 
 The raw loader validates generated files before loading by default, deletes existing rows for the target batch date, reloads the current files, and writes ingestion metadata to Snowflake.
+
+The generated-data validator also checks the snapshot-date contract: future actual delivery dates, future review dates, and reviews for undelivered orders fail validation. Future estimated delivery dates are allowed.
 
 Useful checks:
 

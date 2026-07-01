@@ -50,9 +50,11 @@ def load_supplier_risk_data() -> pd.DataFrame:
             snapshot_date::date as "snapshot_date",
             seller_id as "seller_id",
             total_orders as "total_orders",
+            overdue_open_orders as "overdue_open_orders",
             late_delivery_rate as "late_delivery_rate",
             avg_delay_days as "avg_delay_days",
             avg_review_score as "avg_review_score",
+            reviewed_orders as "reviewed_orders",
             delayed_order_value as "delayed_order_value",
             risk_score as "risk_score",
             risk_level as "risk_level"
@@ -76,9 +78,11 @@ def load_supplier_risk_data() -> pd.DataFrame:
 
     numeric_columns = [
         "total_orders",
+        "overdue_open_orders",
         "late_delivery_rate",
         "avg_delay_days",
         "avg_review_score",
+        "reviewed_orders",
         "delayed_order_value",
         "risk_score",
     ]
@@ -145,14 +149,14 @@ def show_kpis(df: pd.DataFrame) -> None:
     unique_suppliers = df["seller_id"].nunique()
     high_risk_suppliers = len(df[df["risk_level"] == "high"])
     average_risk_score = df["risk_score"].mean() if not df.empty else 0
-    delayed_order_value = df["delayed_order_value"].sum()
+    overdue_open_orders = int(df["overdue_open_orders"].sum())
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Supplier snapshots", f"{supplier_snapshots:,}")
     col2.metric("Unique suppliers", f"{unique_suppliers:,}")
     col3.metric("High-risk suppliers", f"{high_risk_suppliers:,}")
     col4.metric("Average risk score", f"{average_risk_score:.3f}")
-    col5.metric("Delayed order value", format_currency(delayed_order_value))
+    col5.metric("Open overdue orders", f"{overdue_open_orders:,}")
 
 
 def show_risk_distribution(df: pd.DataFrame) -> None:
@@ -255,9 +259,11 @@ def show_suppliers_requiring_attention(df: pd.DataFrame) -> None:
         "snapshot_date",
         "seller_id",
         "total_orders",
+        "overdue_open_orders",
         "late_delivery_rate",
         "avg_delay_days",
         "avg_review_score",
+        "reviewed_orders",
         "delayed_order_value",
         "risk_score",
         "risk_level",
@@ -282,7 +288,7 @@ def show_suppliers_requiring_attention(df: pd.DataFrame) -> None:
         hide_index=True,
         column_config={
             "late_delivery_rate": st.column_config.NumberColumn(
-                "late_delivery_rate",
+                "late_or_overdue_rate",
                 format="%.2f",
             ),
             "avg_delay_days": st.column_config.NumberColumn(

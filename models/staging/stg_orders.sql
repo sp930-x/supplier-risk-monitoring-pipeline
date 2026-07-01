@@ -16,6 +16,27 @@ typed_orders as (
         source_type,
         to_date(batch_date) as batch_date
     from source_orders
+),
+
+delivery_status as (
+    select
+        order_id,
+        customer_id,
+        order_status,
+        order_purchase_timestamp,
+        order_approved_at,
+        order_delivered_carrier_date,
+        order_delivered_customer_date,
+        order_estimated_delivery_date,
+        source_type,
+        batch_date,
+        order_delivered_customer_date is not null
+            and datediff('day', order_estimated_delivery_date, order_delivered_customer_date) > 0
+            as is_late_delivery,
+        order_delivered_customer_date is null
+            and to_date(order_estimated_delivery_date) < batch_date
+            as is_overdue_open
+    from typed_orders
 )
 
 select
@@ -29,11 +50,15 @@ select
     order_estimated_delivery_date,
     source_type,
     batch_date,
-    datediff('day', order_estimated_delivery_date, order_delivered_customer_date) > 0
-        as is_late_delivery,
-    greatest(
-        coalesce(datediff('day', order_estimated_delivery_date, order_delivered_customer_date), 0),
-        0
-    ) as delay_days
-from typed_orders
-
+    is_late_delivery,
+    is_overdue_open,
+    is_late_delivery or is_overdue_open as is_delivery_risk,
+    case
+        when order_delivered_customer_date is not null then greatest(
+            coalesce(datediff('day', order_estimated_delivery_date, order_delivered_customer_date), 0),
+            0
+        )
+        when is_overdue_open then datediff('day', order_estimated_delivery_date, batch_date)
+        else 0
+    end as delay_days
+from delivery_status
