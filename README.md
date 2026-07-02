@@ -47,19 +47,27 @@ It includes supplier-level metrics such as:
 - late or currently overdue delivery rate
 - open overdue orders
 - average delay days
+- average delivery days
+- average open order age days
 - reviewed orders
 - average review score
 - delayed order value
+- risk scoring components
 - risk score
 - risk level: `high`, `medium`, or `low`
 
-The mart uses a rolling 7-day window so each supplier snapshot reflects recent operational behavior rather than only one isolated day.
+The mart uses the current daily snapshot for each `snapshot_date`, so open orders, overdue orders, delivered orders, and reviewed orders are interpreted as the supplier state visible on that date.
 
 ## Data Design Notes
 
 `batch_date` is used as a daily observation date, also called a snapshot date.
 
-Each generated batch represents the supplier-relevant order states that are observable on that date. It is not intended to be a full order lifecycle history for every individual `order_id`.
+Each generated batch represents the supplier-relevant order states that are observable on that date. The same `order_id` can appear in multiple daily batches as the order moves through its lifecycle from `processing` to `shipped`, `delivered`, and reviewed.
+
+Each batch therefore contains both:
+
+- new orders purchased on the `batch_date`
+- recent existing orders that are still open, overdue, delivered, or newly reviewed as of the `batch_date`
 
 The generator follows these rules:
 
@@ -70,8 +78,6 @@ The generator follows these rules:
 - reviews are generated only for orders that have already been delivered by the snapshot date
 
 The supplier risk model counts both already late deliveries and currently overdue open orders as delivery risk. Review-based risk is calculated from orders that already have reviews.
-
-Future improvement: model order lifecycle updates across days by allowing the same `order_id` to appear in multiple daily snapshots as its status changes from `processing` to `shipped`, `overdue`, `delivered`, and `reviewed`.
 
 ## Supplier Risk Scoring
 
@@ -127,6 +133,8 @@ In a production setting, these weights and thresholds should be calibrated with 
 |   +-- validate_generated_data.py
 |   +-- load_raw_to_snowflake.py
 |   +-- test_snowflake_connection.py
++-- tests/
+|   +-- test_*.sql
 +-- dbt_project.yml
 +-- docker-compose.yaml
 +-- Dockerfile
@@ -261,14 +269,14 @@ streamlit run dashboard/app.py
 The dashboard includes:
 
 - sidebar filters for report week, `risk_level`, and minimum total orders
-- KPI cards for reporting days, unique suppliers, high-risk suppliers, average risk score, and open overdue orders
-- current risk level distribution chart
-- high-risk suppliers at week-end snapshot chart
-- average risk score at week-end snapshot chart
-- delayed order value at week-end snapshot chart
-- Suppliers Requiring Attention table for high-risk suppliers on the selected report week's latest snapshot
+- an `Executive Summary` tab with KPI cards, the top priority supplier, risk level distribution, and high-risk driver distribution
+- a `Risk Drivers` tab showing why suppliers are flagged, including the main driver and weighted risk score breakdown
+- a `Weekly Trends` tab for open overdue orders, average risk score, and delayed order value at week-end snapshots
+- a `Supplier Detail` tab with high-risk suppliers on the selected report week's latest snapshot
 
-The report week uses `Week 1`, `Week 2`, and similar labels in charts, with the date range shown in the filter and chart hover details. Each week uses the latest available daily snapshot in that week as the week-end view. This keeps the underlying mart daily while presenting the dashboard in a weekly reporting format.
+The dashboard applies the sidebar filters consistently across KPIs, charts, and tables. The visual design uses a muted risk palette and gradient-style risk intensity charting so high-risk suppliers stand out without relying on overly saturated colors.
+
+The report week uses `Week 1`, `Week 2`, and similar labels in charts, with the available date range shown in the filter and chart hover details. For partial weeks, the date range ends at the latest available snapshot rather than the calendar week end. This keeps the underlying mart daily while presenting the dashboard in a weekly reporting format.
 
 The dashboard reads from the final dbt mart table in Snowflake. The mart is refreshed by the Airflow pipeline.
 
@@ -279,6 +287,8 @@ The pipeline is designed to be rerun safely for the same `batch_date`.
 The raw loader validates generated files before loading by default, deletes existing rows for the target batch date, reloads the current files, and writes ingestion metadata to Snowflake.
 
 The generated-data validator also checks the snapshot-date contract: future actual delivery dates, future review dates, and reviews for undelivered orders fail validation. Future estimated delivery dates are allowed.
+
+The dbt tests include snapshot-grain checks so repeated lifecycle records do not create duplicate rows inside a single `snapshot_date`. The final mart is expected to be unique by `snapshot_date` and `seller_id`.
 
 Useful checks:
 

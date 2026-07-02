@@ -18,13 +18,23 @@ order_items_at_order_seller_grain as (
 
 order_facts as (
     select
-        items.batch_date as order_date,
+        items.batch_date as snapshot_date,
         items.seller_id,
         items.order_id,
         orders.is_late_delivery,
         orders.is_overdue_open,
         orders.is_delivery_risk,
         orders.delay_days,
+        iff(
+            orders.order_delivered_customer_date is not null,
+            datediff('day', orders.order_purchase_timestamp, orders.order_delivered_customer_date),
+            null
+        ) as delivery_days,
+        iff(
+            orders.order_delivered_customer_date is null,
+            datediff('day', orders.order_purchase_timestamp, orders.batch_date),
+            null
+        ) as open_order_age_days,
         items.order_value
     from order_items_at_order_seller_grain as items
     inner join {{ ref('stg_orders') }} as orders
@@ -44,21 +54,21 @@ reviews_at_order_grain as (
         order_id
 ),
 
-orders_in_rolling_window as (
+orders_in_snapshot as (
     select
         snapshots.snapshot_date,
-        orders.order_date,
         orders.seller_id,
         orders.order_id,
         orders.is_late_delivery,
         orders.is_overdue_open,
         orders.is_delivery_risk,
         orders.delay_days,
+        orders.delivery_days,
+        orders.open_order_age_days,
         orders.order_value
     from snapshot_dates as snapshots
     inner join order_facts as orders
-        on orders.order_date between dateadd('day', -6, snapshots.snapshot_date)
-            and snapshots.snapshot_date
+        on orders.snapshot_date = snapshots.snapshot_date
 ),
 
 seller_metrics as (
@@ -71,6 +81,8 @@ seller_metrics as (
         sum(iff(orders.is_delivery_risk, 1, 0))
             / nullif(count(distinct orders.order_id), 0) as late_delivery_rate,
         avg(orders.delay_days) as avg_delay_days,
+        avg(orders.delivery_days) as avg_delivery_days,
+        avg(orders.open_order_age_days) as avg_open_order_age_days,
         avg(reviews.review_score) as avg_review_score,
         count(reviews.order_id) as reviewed_orders,
         sum(coalesce(reviews.is_low_review, 0)) as low_review_count,
@@ -80,10 +92,10 @@ seller_metrics as (
         sum(iff(orders.is_delivery_risk, orders.order_value, 0)) as delayed_order_value,
         sum(iff(orders.is_delivery_risk, orders.order_value, 0))
             / nullif(sum(orders.order_value), 0) as delayed_order_value_share
-    from orders_in_rolling_window as orders
+    from orders_in_snapshot as orders
     left join reviews_at_order_grain as reviews
         on orders.order_id = reviews.order_id
-        and orders.order_date = reviews.batch_date
+        and orders.snapshot_date = reviews.batch_date
     group by
         orders.snapshot_date,
         orders.seller_id
@@ -98,6 +110,8 @@ scored as (
         overdue_open_orders,
         coalesce(late_delivery_rate, 0) as late_delivery_rate,
         avg_delay_days,
+        avg_delivery_days,
+        avg_open_order_age_days,
         avg_review_score,
         reviewed_orders,
         low_review_count,
@@ -119,6 +133,8 @@ select
     overdue_open_orders,
     late_delivery_rate,
     avg_delay_days,
+    avg_delivery_days,
+    avg_open_order_age_days,
     avg_review_score,
     reviewed_orders,
     low_review_count,

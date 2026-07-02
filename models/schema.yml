@@ -36,7 +36,6 @@ models:
       - name: review_id
         tests:
           - not_null
-          - unique
       - name: order_id
         tests:
           - not_null

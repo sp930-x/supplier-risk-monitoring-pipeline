@@ -5,6 +5,7 @@ config-version: 2
 profile: supplier_risk
 
 model-paths: ["models"]
+test-paths: ["tests"]
 
 models:
   supplier_risk:
