@@ -40,7 +40,10 @@ def validate_batch(batch_dir: Path) -> None:
         [
             "order_id",
             "customer_id",
+            "order_status",
             "order_purchase_timestamp",
+            "order_approved_at",
+            "order_delivered_carrier_date",
             "order_delivered_customer_date",
             "order_estimated_delivery_date",
             "source_type",
@@ -203,6 +206,44 @@ def validate_batch(batch_dir: Path) -> None:
     if invalid_delivery_dates > 0:
         fail(f"{invalid_delivery_dates} orders have delivery date before purchase timestamp")
 
+    invalid_approval_dates = (
+        orders["order_approved_at"].notna()
+        & (orders["order_approved_at"] < orders["order_purchase_timestamp"])
+    ).sum()
+
+    if invalid_approval_dates > 0:
+        fail(f"{invalid_approval_dates} orders have approval timestamp before purchase timestamp")
+
+    invalid_carrier_before_purchase = (
+        orders["order_delivered_carrier_date"].notna()
+        & (orders["order_delivered_carrier_date"] < orders["order_purchase_timestamp"])
+    ).sum()
+
+    if invalid_carrier_before_purchase > 0:
+        fail(f"{invalid_carrier_before_purchase} orders have carrier date before purchase timestamp")
+
+    invalid_carrier_before_approval = (
+        orders["order_delivered_carrier_date"].notna()
+        & (
+            orders["order_approved_at"].isna()
+            | (orders["order_delivered_carrier_date"] < orders["order_approved_at"])
+        )
+    ).sum()
+
+    if invalid_carrier_before_approval > 0:
+        fail(f"{invalid_carrier_before_approval} orders have carrier date before approval timestamp")
+
+    invalid_customer_before_carrier = (
+        orders["order_delivered_customer_date"].notna()
+        & (
+            orders["order_delivered_carrier_date"].isna()
+            | (orders["order_delivered_customer_date"] < orders["order_delivered_carrier_date"])
+        )
+    ).sum()
+
+    if invalid_customer_before_carrier > 0:
+        fail(f"{invalid_customer_before_carrier} orders have customer delivery before carrier date")
+
     future_purchases = (orders["order_purchase_timestamp"] > batch_end).sum()
 
     if future_purchases > 0:
@@ -236,6 +277,14 @@ def validate_batch(batch_dir: Path) -> None:
     if future_review_answers > 0:
         fail(f"{future_review_answers} reviews have review_answer_timestamp after batch_date")
 
+    invalid_review_answer_order = (
+        reviews["review_answer_timestamp"].notna()
+        & (reviews["review_answer_timestamp"] < reviews["review_creation_date"])
+    ).sum()
+
+    if invalid_review_answer_order > 0:
+        fail(f"{invalid_review_answer_order} reviews have answer timestamp before review creation date")
+
     delivered_order_ids = set(
         orders.loc[orders["order_delivered_customer_date"].notna(), "order_id"]
     )
@@ -251,6 +300,36 @@ def validate_batch(batch_dir: Path) -> None:
 
     if invalid_delivered_status > 0:
         fail(f"{invalid_delivered_status} delivered orders have no delivery date")
+
+    invalid_delivered_without_carrier = (
+        (orders["order_status"] == "delivered")
+        & orders["order_delivered_carrier_date"].isna()
+    ).sum()
+
+    if invalid_delivered_without_carrier > 0:
+        fail(f"{invalid_delivered_without_carrier} delivered orders have no carrier date")
+
+    invalid_shipped_status = (
+        (orders["order_status"] == "shipped")
+        & (
+            orders["order_delivered_carrier_date"].isna()
+            | orders["order_delivered_customer_date"].notna()
+        )
+    ).sum()
+
+    if invalid_shipped_status > 0:
+        fail(f"{invalid_shipped_status} shipped orders have missing carrier date or customer delivery date")
+
+    invalid_processing_status = (
+        (orders["order_status"] == "processing")
+        & (
+            orders["order_delivered_carrier_date"].notna()
+            | orders["order_delivered_customer_date"].notna()
+        )
+    ).sum()
+
+    if invalid_processing_status > 0:
+        fail(f"{invalid_processing_status} processing orders already have delivery dates")
 
     invalid_open_status = (
         (orders["order_status"] != "delivered")

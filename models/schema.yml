@@ -6,6 +6,16 @@ models:
       - name: order_id
         tests:
           - not_null
+      - name: order_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['delivered', 'shipped', 'processing', 'approved', 'invoiced']
+      - name: source_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['synthetic']
       - name: batch_date
         tests:
           - not_null
@@ -18,6 +28,11 @@ models:
       - name: seller_id
         tests:
           - not_null
+      - name: source_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['synthetic']
       - name: batch_date
         tests:
           - not_null
@@ -27,6 +42,16 @@ models:
       - name: order_id
         tests:
           - not_null
+      - name: payment_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['credit_card', 'boleto', 'voucher', 'debit_card']
+      - name: source_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['synthetic']
       - name: batch_date
         tests:
           - not_null
@@ -39,18 +64,41 @@ models:
       - name: order_id
         tests:
           - not_null
+      - name: source_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['synthetic']
       - name: batch_date
         tests:
           - not_null
 
   - name: mart_supplier_risk_snapshot
     columns:
+      - name: report_week_start
+        tests:
+          - not_null
+      - name: report_week_end
+        tests:
+          - not_null
+      - name: reporting_week_snapshot_days
+        tests:
+          - not_null
+      - name: is_complete_reporting_week
+        tests:
+          - not_null
       - name: snapshot_date
         tests:
           - not_null
       - name: seller_id
         tests:
           - not_null
+      - name: primary_risk_driver
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Delivery', 'Reviews', 'Value exposure']
       - name: risk_level
         tests:
           - not_null

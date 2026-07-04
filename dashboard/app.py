@@ -11,22 +11,22 @@ from dotenv import load_dotenv
 MART_TABLE = "SUPPLIER_RISK.ANALYTICS.MART_SUPPLIER_RISK_SNAPSHOT"
 RISK_LEVEL_ORDER = ["high", "medium", "low"]
 RISK_LEVEL_COLORS = {
-    "high": "#9f5f5f",
-    "medium": "#c59a5b",
-    "low": "#6f9f8b",
+    "high": "#b65b5b",
+    "medium": "#d99a2b",
+    "low": "#4f9d7a",
 }
-ACCENT_COLOR = "#6f7f95"
-MUTED_COLOR = "#8a94a6"
+ACCENT_COLOR = "#4d6fa3"
+MUTED_COLOR = "#667085"
 DRIVER_COLORS = {
-    "Delivery": "#9f5f5f",
-    "Reviews": "#c59a5b",
-    "Value exposure": "#6f7f95",
+    "Delivery": "#b65b5b",
+    "Reviews": "#d99a2b",
+    "Value exposure": "#4d6fa3",
 }
 RISK_SCORE_GRADIENT = [
-    [0.0, "#f3eee8"],
-    [0.45, "#d9b98c"],
-    [0.75, "#b9826f"],
-    [1.0, "#8f4f5f"],
+    [0.0, "#f2f7f4"],
+    [0.45, "#f6d99d"],
+    [0.75, "#dc8a73"],
+    [1.0, "#a94747"],
 ]
 
 
@@ -36,29 +36,40 @@ def inject_page_styles() -> None:
         """
         <style>
         div[data-testid="stMetric"] {
-            border: 1px solid #e5e7eb;
+            border: 1px solid #d0d5dd;
             border-radius: 8px;
             padding: 12px 14px;
-            background: #ffffff;
+            background: #fcfcfd;
+        }
+        div[data-testid="stMetric"] label {
+            color: #475467;
+            font-size: 13px;
+        }
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+            color: #101828;
+            font-weight: 600;
+        }
+        section[data-testid="stSidebar"] {
+            background-color: #f8fafc;
         }
         .risk-callout {
-            border-left: 6px solid #9f5f5f;
+            border-left: 6px solid #b65b5b;
             border-radius: 8px;
             padding: 14px 16px;
-            background: linear-gradient(90deg, #fbf3ef 0%, #ffffff 72%);
-            border-top: 1px solid #ead4cb;
-            border-right: 1px solid #ead4cb;
-            border-bottom: 1px solid #ead4cb;
+            background: linear-gradient(90deg, #fff4f2 0%, #ffffff 78%);
+            border-top: 1px solid #f1c9c3;
+            border-right: 1px solid #f1c9c3;
+            border-bottom: 1px solid #f1c9c3;
             margin: 6px 0 18px 0;
         }
         .risk-callout h3 {
             margin: 0 0 8px 0;
-            color: #704141;
+            color: #7a2e2e;
             font-size: 18px;
         }
         .risk-callout p {
             margin: 4px 0;
-            color: #374151;
+            color: #344054;
             font-size: 14px;
         }
         </style>
@@ -82,14 +93,22 @@ def connect_to_snowflake() -> snowflake.connector.SnowflakeConnection:
     """Create a Snowflake connection using the same .env contract as the pipeline."""
     load_dotenv()
 
-    return snowflake.connector.connect(
-        account=get_required_env("SNOWFLAKE_ACCOUNT"),
-        user=get_required_env("SNOWFLAKE_USER"),
-        password=get_required_env("SNOWFLAKE_PASSWORD"),
-        role=get_required_env("SNOWFLAKE_ROLE"),
-        warehouse=get_required_env("SNOWFLAKE_WAREHOUSE"),
-        database=get_required_env("SNOWFLAKE_DATABASE"),
-    )
+    connection_args = {
+        "account": get_required_env("SNOWFLAKE_ACCOUNT"),
+        "user": get_required_env("SNOWFLAKE_USER"),
+        "role": get_required_env("SNOWFLAKE_ROLE"),
+        "warehouse": get_required_env("SNOWFLAKE_WAREHOUSE"),
+        "database": get_required_env("SNOWFLAKE_DATABASE"),
+        "schema": get_required_env("SNOWFLAKE_SCHEMA"),
+    }
+
+    authenticator = os.getenv("SNOWFLAKE_AUTHENTICATOR")
+    if authenticator:
+        connection_args["authenticator"] = authenticator
+    else:
+        connection_args["password"] = get_required_env("SNOWFLAKE_PASSWORD")
+
+    return snowflake.connector.connect(**connection_args)
 
 
 @st.cache_data(ttl=300)
@@ -97,6 +116,10 @@ def load_supplier_risk_data() -> pd.DataFrame:
     """Load the final dbt mart into a pandas DataFrame."""
     query = f"""
         select
+            report_week_start::date as "report_week_start",
+            report_week_end::date as "report_week_end",
+            reporting_week_snapshot_days as "reporting_week_snapshot_days",
+            is_complete_reporting_week as "is_complete_reporting_week",
             snapshot_date::date as "snapshot_date",
             seller_id as "seller_id",
             total_orders as "total_orders",
@@ -113,7 +136,12 @@ def load_supplier_risk_data() -> pd.DataFrame:
             total_order_value as "total_order_value",
             delayed_order_value as "delayed_order_value",
             delayed_order_value_share as "delayed_order_value_share",
+            risk_score_delivery_component as "risk_score_delivery_component",
+            risk_score_review_component as "risk_score_review_component",
+            risk_score_value_component as "risk_score_value_component",
             risk_score as "risk_score",
+            primary_risk_driver as "primary_risk_driver",
+            risk_reason as "risk_reason",
             risk_level as "risk_level"
         from {MART_TABLE}
         order by snapshot_date, seller_id
@@ -132,25 +160,17 @@ def load_supplier_risk_data() -> pd.DataFrame:
 
     # Keep dates and numeric fields predictable for filtering, KPIs, and charts.
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
-    snapshot_dates = pd.to_datetime(df["snapshot_date"])
-    df["week_start"] = (
-        snapshot_dates - pd.to_timedelta(snapshot_dates.dt.weekday, unit="D")
-    ).dt.date
-    available_week_ends = (
-        df.groupby("week_start", as_index=False)["snapshot_date"]
-        .max()
-        .rename(columns={"snapshot_date": "available_week_end"})
-    )
-    df = df.merge(available_week_ends, on="week_start", how="left")
+    df["week_start"] = pd.to_datetime(df["report_week_start"]).dt.date
+    df["week_end"] = pd.to_datetime(df["report_week_end"]).dt.date
     df["report_week"] = (
-        df["week_start"].astype(str) + " to " + df["available_week_end"].astype(str)
+        df["week_start"].astype(str) + " to " + df["week_end"].astype(str)
     )
-    week_numbers = (
-        pd.DataFrame({"week_start": sorted(df["week_start"].unique())})
-        .assign(report_week_number=lambda weeks: range(1, len(weeks) + 1))
-    )
-    df = df.merge(week_numbers, on="week_start", how="left")
-    df["report_week_label"] = "Week " + df["report_week_number"].astype(str)
+    df["snapshot_days"] = pd.to_numeric(
+        df["reporting_week_snapshot_days"],
+        errors="coerce",
+    ).fillna(0)
+    df["is_complete_week"] = df["is_complete_reporting_week"].fillna(False).astype(bool)
+    df["report_week_label"] = df["report_week"]
 
     numeric_columns = [
         "total_orders",
@@ -167,13 +187,17 @@ def load_supplier_risk_data() -> pd.DataFrame:
         "total_order_value",
         "delayed_order_value",
         "delayed_order_value_share",
+        "risk_score_delivery_component",
+        "risk_score_review_component",
+        "risk_score_value_component",
         "risk_score",
     ]
     for column in numeric_columns:
         df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
 
     df["risk_level"] = df["risk_level"].fillna("unknown").str.lower()
-    df = add_risk_explanations(df)
+    df["primary_risk_driver"] = df["primary_risk_driver"].fillna("Unknown")
+    df["risk_reason"] = df["risk_reason"].fillna("No risk driver available")
 
     return df
 
@@ -183,40 +207,27 @@ def format_currency(value: float) -> str:
     return f"${value:,.2f}"
 
 
-def add_risk_explanations(df: pd.DataFrame) -> pd.DataFrame:
-    """Add readable driver labels that explain each supplier's risk score."""
-    driver_columns = {
-        "Delivery": df["late_delivery_rate"] * 0.4,
-        "Reviews": df["low_review_rate"] * 0.3,
-        "Value exposure": df["delayed_order_value_share"] * 0.3,
-    }
-    driver_scores = pd.DataFrame(driver_columns)
-    df["primary_risk_driver"] = driver_scores.idxmax(axis=1)
-    df["risk_reason"] = (
-        "Delivery "
-        + (df["late_delivery_rate"] * 100).round(0).astype(int).astype(str)
-        + "% | Reviews "
-        + (df["low_review_rate"] * 100).round(0).astype(int).astype(str)
-        + "% | Value "
-        + (df["delayed_order_value_share"] * 100).round(0).astype(int).astype(str)
-        + "%"
-    )
-    return df
+def shorten_identifier(value: str, prefix: int = 8, suffix: int = 4) -> str:
+    """Keep long synthetic IDs readable in charts and callouts."""
+    text = str(value)
+    if len(text) <= prefix + suffix + 3:
+        return text
+    return f"{text[:prefix]}...{text[-suffix:]}"
 
 
 def polish_chart(fig) -> None:
     """Apply a calm, readable visual style to Plotly charts."""
     fig.update_layout(
         template="plotly_white",
-        font={"family": "Arial", "size": 13, "color": "#1f2937"},
-        title={"font": {"size": 18, "color": "#111827"}},
+        font={"family": "Arial", "size": 12, "color": "#344054"},
+        title={"font": {"size": 16, "color": "#101828"}},
         legend_title_text="",
         margin={"l": 16, "r": 16, "t": 56, "b": 24},
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
     fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(gridcolor="#e5e7eb", zeroline=False)
+    fig.update_yaxes(gridcolor="#eaecf0", zeroline=False)
 
 
 def get_ordered_risk_levels(df: pd.DataFrame) -> list[str]:
@@ -234,7 +245,10 @@ def build_sidebar_filters(df: pd.DataFrame) -> tuple[date, list[str], int]:
     st.sidebar.header("Filters")
 
     available_weeks = (
-        df[["week_start", "available_week_end", "report_week", "report_week_label"]]
+        df.loc[
+            df["is_complete_week"],
+            ["week_start", "week_end", "report_week", "report_week_label"],
+        ]
         .drop_duplicates()
         .sort_values("week_start")
     )
@@ -242,7 +256,7 @@ def build_sidebar_filters(df: pd.DataFrame) -> tuple[date, list[str], int]:
     week_label_by_start = dict(
         zip(
             available_weeks["week_start"],
-            available_weeks["report_week_label"] + " (" + available_weeks["report_week"] + ")",
+            available_weeks["report_week_label"],
         )
     )
 
@@ -287,32 +301,19 @@ def apply_sidebar_filters(
 
 def get_week_end_snapshot(df: pd.DataFrame) -> pd.DataFrame:
     """Return the latest available daily snapshot inside each reporting week."""
-    return df[df["snapshot_date"] == df["available_week_end"]]
-
-
-def show_kpis(df: pd.DataFrame, reporting_days: int) -> None:
-    """Show KPI cards for the selected reporting week."""
-    unique_suppliers = df["seller_id"].nunique()
-    high_risk_suppliers = len(df[df["risk_level"] == "high"])
-    average_risk_score = df["risk_score"].mean() if not df.empty else 0
-    overdue_open_orders = int(df["overdue_open_orders"].sum())
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Reporting days", f"{reporting_days:,}")
-    col2.metric("Unique suppliers", f"{unique_suppliers:,}")
-    col3.metric("High-risk suppliers", f"{high_risk_suppliers:,}")
-    col4.metric("Average risk score", f"{average_risk_score:.3f}")
-    col5.metric("Open overdue orders", f"{overdue_open_orders:,}")
+    return df[df["snapshot_date"] == df["week_end"]]
 
 
 def show_at_a_glance(df: pd.DataFrame, reporting_days: int) -> None:
     """Show the most important operational takeaways first."""
     high_risk_df = df[df["risk_level"] == "high"].copy()
-    total_suppliers = df["seller_id"].nunique()
+    medium_risk_df = df[df["risk_level"] == "medium"].copy()
+    eligible_suppliers = df["seller_id"].nunique()
+    attention_suppliers = df[df["risk_level"].isin(["high", "medium"])][
+        "seller_id"
+    ].nunique()
     high_risk_suppliers = high_risk_df["seller_id"].nunique()
-    high_risk_share = (
-        high_risk_suppliers / total_suppliers if total_suppliers else 0
-    )
+    medium_risk_suppliers = medium_risk_df["seller_id"].nunique()
 
     top_supplier = None
     if not high_risk_df.empty:
@@ -321,20 +322,33 @@ def show_at_a_glance(df: pd.DataFrame, reporting_days: int) -> None:
             ascending=[False, False],
         ).iloc[0]
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("High-risk suppliers", f"{high_risk_suppliers:,}")
-    col2.metric("High-risk share", f"{high_risk_share:.1%}")
-    col3.metric("Open overdue orders", f"{int(df['overdue_open_orders'].sum()):,}")
-    col4.metric("Delayed value", format_currency(df["delayed_order_value"].sum()))
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Reporting days", f"{reporting_days:,}")
+    col2.metric("Eligible suppliers", f"{eligible_suppliers:,}")
+    col3.metric("Attention suppliers", f"{attention_suppliers:,}")
+    col4.metric("High-risk suppliers", f"{high_risk_suppliers:,}")
+    col5.metric(
+        "Week-end overdue orders", f"{int(df['overdue_open_orders'].sum()):,}"
+    )
+    col6.metric(
+        "Week-end delayed value", format_currency(df["delayed_order_value"].sum())
+    )
 
     if top_supplier is None:
-        st.success("No high-risk suppliers match the current filters.")
+        if medium_risk_suppliers:
+            st.success(
+                "No urgent high-risk suppliers this week. "
+                "Medium-risk suppliers are still monitored as attention cases."
+            )
+        else:
+            st.success("No high- or medium-risk suppliers match the current filters.")
         return
 
+    top_supplier_label = shorten_identifier(top_supplier["seller_id"])
     st.markdown(
         f"""
         <div class="risk-callout">
-            <h3>Top priority supplier: {top_supplier["seller_id"]}</h3>
+            <h3>Top priority supplier: {top_supplier_label}</h3>
             <p><strong>Main driver:</strong> {top_supplier["primary_risk_driver"]} | <strong>Risk score:</strong> {top_supplier["risk_score"]:.3f}</p>
             <p><strong>Why:</strong> {top_supplier["risk_reason"]}</p>
             <p><strong>Operations:</strong> {int(top_supplier["total_orders"]):,} orders, {int(top_supplier["overdue_open_orders"]):,} open overdue, {top_supplier["avg_delivery_days"]:.1f} avg delivery days, {top_supplier["avg_delay_days"]:.1f} avg delay days, {format_currency(top_supplier["delayed_order_value"])} delayed value.</p>
@@ -344,15 +358,18 @@ def show_at_a_glance(df: pd.DataFrame, reporting_days: int) -> None:
     )
 
 
-def show_risk_driver_distribution(df: pd.DataFrame, chart_key: str) -> None:
-    """Show which signal is driving the high-risk supplier group."""
-    high_risk_df = df[df["risk_level"] == "high"].copy()
-    if high_risk_df.empty:
-        st.info("No high-risk suppliers match the current filters.")
+def show_risk_driver_distribution(
+    df: pd.DataFrame,
+    chart_key: str,
+    title: str,
+) -> None:
+    """Show which signal is driving the selected supplier group."""
+    if df.empty:
+        st.info("No suppliers match the current driver filters.")
         return
 
     driver_counts = (
-        high_risk_df.groupby("primary_risk_driver", as_index=False)
+        df.groupby("primary_risk_driver", as_index=False)
         .size()
         .rename(columns={"size": "suppliers"})
         .sort_values("suppliers", ascending=False)
@@ -363,7 +380,7 @@ def show_risk_driver_distribution(df: pd.DataFrame, chart_key: str) -> None:
         y="primary_risk_driver",
         orientation="h",
         color="primary_risk_driver",
-        title="High-risk suppliers by main driver",
+        title=title,
         color_discrete_map=DRIVER_COLORS,
         labels={
             "suppliers": "Suppliers",
@@ -381,6 +398,11 @@ def show_risk_distribution(df: pd.DataFrame, chart_key: str) -> None:
         df.groupby("risk_level", as_index=False)
         .size()
         .rename(columns={"size": "supplier_snapshots"})
+    )
+    risk_distribution = (
+        risk_distribution.set_index("risk_level")
+        .reindex(RISK_LEVEL_ORDER, fill_value=0)
+        .reset_index()
     )
     risk_distribution["risk_level"] = pd.Categorical(
         risk_distribution["risk_level"],
@@ -407,7 +429,12 @@ def show_risk_distribution(df: pd.DataFrame, chart_key: str) -> None:
 
 def show_trend_charts(df: pd.DataFrame) -> None:
     """Build weekly trend charts from week-end snapshots."""
-    week_end_snapshots = get_week_end_snapshot(df)
+    complete_week_df = df[df["is_complete_week"]].copy()
+    week_end_snapshots = get_week_end_snapshot(complete_week_df)
+    if week_end_snapshots.empty:
+        st.info("No complete Monday-to-Sunday reporting weeks match the trend filters.")
+        return
+
     all_weeks = pd.DataFrame(
         {
             "week_start": sorted(week_end_snapshots["week_start"].unique())
@@ -522,17 +549,19 @@ def show_high_risk_driver_chart(df: pd.DataFrame) -> None:
         df.sort_values("risk_score", ascending=False)
         .head(12)
         .sort_values("risk_score")
+        .assign(supplier_label=lambda frame: frame["seller_id"].map(shorten_identifier))
     )
     driver_chart = px.bar(
         driver_df,
         x="risk_score",
-        y="seller_id",
+        y="supplier_label",
         orientation="h",
         color="risk_score",
-        title="Why top high-risk suppliers are flagged",
+        title="Highest-risk suppliers requiring attention",
         color_continuous_scale=RISK_SCORE_GRADIENT,
         hover_data={
-            "seller_id": False,
+            "seller_id": True,
+            "supplier_label": False,
             "primary_risk_driver": True,
             "total_orders": True,
             "late_delivery_rate": ":.2f",
@@ -543,7 +572,8 @@ def show_high_risk_driver_chart(df: pd.DataFrame) -> None:
         },
         labels={
             "risk_score": "Risk score",
-            "seller_id": "Supplier",
+            "supplier_label": "Supplier",
+            "seller_id": "Full supplier ID",
             "primary_risk_driver": "Main driver",
             "total_orders": "Orders",
             "late_delivery_rate": "Late/overdue rate",
@@ -565,7 +595,7 @@ def show_high_risk_driver_chart(df: pd.DataFrame) -> None:
 def show_risk_score_breakdown(df: pd.DataFrame) -> None:
     """Show the weighted score components for the highest-risk suppliers."""
     if df.empty:
-        st.info("No high-risk suppliers match the current driver filters.")
+        st.info("No attention suppliers match the current driver filters.")
         return
 
     breakdown_df = (
@@ -575,20 +605,23 @@ def show_risk_score_breakdown(df: pd.DataFrame) -> None:
             :,
             [
                 "seller_id",
-                "late_delivery_rate",
-                "low_review_rate",
-                "delayed_order_value_share",
+                "risk_score_delivery_component",
+                "risk_score_review_component",
+                "risk_score_value_component",
             ],
         ]
         .copy()
     )
-    breakdown_df["Delivery"] = breakdown_df["late_delivery_rate"] * 0.4
-    breakdown_df["Reviews"] = breakdown_df["low_review_rate"] * 0.3
-    breakdown_df["Value exposure"] = (
-        breakdown_df["delayed_order_value_share"] * 0.3
+    breakdown_df["supplier_label"] = breakdown_df["seller_id"].map(shorten_identifier)
+    breakdown_df = breakdown_df.rename(
+        columns={
+            "risk_score_delivery_component": "Delivery",
+            "risk_score_review_component": "Reviews",
+            "risk_score_value_component": "Value exposure",
+        }
     )
     breakdown_long = breakdown_df.melt(
-        id_vars="seller_id",
+        id_vars=["supplier_label", "seller_id"],
         value_vars=["Delivery", "Reviews", "Value exposure"],
         var_name="risk_component",
         value_name="score_contribution",
@@ -597,14 +630,16 @@ def show_risk_score_breakdown(df: pd.DataFrame) -> None:
     breakdown_chart = px.bar(
         breakdown_long,
         x="score_contribution",
-        y="seller_id",
+        y="supplier_label",
         color="risk_component",
         orientation="h",
-        title="Risk score breakdown for top high-risk suppliers",
+        title="Risk score breakdown for attention suppliers",
         color_discrete_map=DRIVER_COLORS,
+        hover_data={"seller_id": True, "supplier_label": False},
         labels={
             "score_contribution": "Weighted score contribution",
-            "seller_id": "Supplier",
+            "supplier_label": "Supplier",
+            "seller_id": "Full supplier ID",
             "risk_component": "Risk component",
         },
     )
@@ -618,15 +653,19 @@ def show_risk_score_breakdown(df: pd.DataFrame) -> None:
 
 
 def show_suppliers_requiring_attention(df: pd.DataFrame) -> None:
-    """Show high-risk suppliers that need business attention."""
+    """Show high- and medium-risk suppliers that need business attention."""
     table_columns = [
         "snapshot_date",
+        "supplier",
         "seller_id",
+        "risk_level",
+        "risk_score",
+        "primary_risk_driver",
+        "risk_reason",
         "total_orders",
         "late_orders",
         "overdue_open_orders",
-        "primary_risk_driver",
-        "risk_reason",
+        "delayed_order_value",
         "late_delivery_rate",
         "low_review_rate",
         "delayed_order_value_share",
@@ -635,17 +674,14 @@ def show_suppliers_requiring_attention(df: pd.DataFrame) -> None:
         "avg_delay_days",
         "avg_review_score",
         "reviewed_orders",
-        "delayed_order_value",
-        "risk_score",
-        "risk_level",
     ]
 
     if df.empty:
-        st.info("No high-risk suppliers match the current attention filters.")
+        st.info("No attention suppliers match the current filters.")
         return
 
     attention_table = (
-        df[table_columns]
+        df.assign(supplier=lambda frame: frame["seller_id"].map(shorten_identifier))[table_columns]
         .sort_values(
             by=["risk_score", "delayed_order_value"],
             ascending=[False, False],
@@ -658,6 +694,9 @@ def show_suppliers_requiring_attention(df: pd.DataFrame) -> None:
         use_container_width=True,
         hide_index=True,
         column_config={
+            "supplier": st.column_config.TextColumn("supplier"),
+            "seller_id": st.column_config.TextColumn("full_seller_id"),
+            "risk_level": st.column_config.TextColumn("risk_level"),
             "late_delivery_rate": st.column_config.NumberColumn(
                 "late_or_overdue_rate",
                 format="%.2f",
@@ -726,6 +765,13 @@ def main() -> None:
         st.warning(f"No rows found in {MART_TABLE}.")
         st.stop()
 
+    if not df["is_complete_week"].any():
+        st.warning(
+            "No complete Monday-to-Sunday reporting weeks are available yet. "
+            "Load at least one full calendar week of daily snapshots to show the weekly report."
+        )
+        st.stop()
+
     (
         selected_week_start,
         selected_risk_levels,
@@ -738,12 +784,15 @@ def main() -> None:
         min_total_orders=min_total_orders,
     )
 
-    selected_week_df = filtered_df[filtered_df["week_start"] == selected_week_start]
+    selected_week_df = filtered_df[
+        (filtered_df["week_start"] == selected_week_start)
+        & (filtered_df["is_complete_week"])
+    ]
     if selected_week_df.empty:
         st.warning("No supplier risk snapshots match the selected weekly filters.")
         st.stop()
 
-    selected_week_end = max(selected_week_df["available_week_end"])
+    selected_week_end = max(selected_week_df["week_end"])
     report_snapshot_date = max(selected_week_df["snapshot_date"])
     report_snapshot_df = selected_week_df[
         selected_week_df["snapshot_date"] == report_snapshot_date
@@ -754,8 +803,8 @@ def main() -> None:
         st.stop()
 
     attention_df = report_snapshot_df[
-        report_snapshot_df["risk_level"] == "high"
-    ]
+        report_snapshot_df["risk_level"].isin(["high", "medium"])
+    ].copy()
 
     st.caption(
         f"Report week: {selected_week_start} to {selected_week_end}. "
@@ -763,12 +812,12 @@ def main() -> None:
         f"Minimum total orders: {min_total_orders}."
     )
 
-    summary_tab, drivers_tab, trends_tab, detail_tab = st.tabs(
+    summary_tab, drivers_tab, trends_tab, attention_tab = st.tabs(
         [
             "Executive Summary",
             "Risk Drivers",
             "Weekly Trends",
-            "Supplier Detail",
+            "Suppliers Requiring Attention",
         ]
     )
 
@@ -777,7 +826,6 @@ def main() -> None:
             report_snapshot_df,
             selected_week_df["snapshot_date"].nunique(),
         )
-        show_kpis(report_snapshot_df, selected_week_df["snapshot_date"].nunique())
         overview_col1, overview_col2 = st.columns(2)
         with overview_col1:
             show_risk_distribution(
@@ -788,23 +836,28 @@ def main() -> None:
             show_risk_driver_distribution(
                 report_snapshot_df,
                 chart_key="summary_risk_driver_distribution",
+                title="Suppliers by main risk driver",
             )
 
     with drivers_tab:
         driver_col1, driver_col2 = st.columns([1, 1.2])
         with driver_col1:
             show_risk_driver_distribution(
-                report_snapshot_df,
+                attention_df,
                 chart_key="drivers_risk_driver_distribution",
+                title="Attention suppliers by main driver",
             )
         with driver_col2:
             show_high_risk_driver_chart(attention_df)
         show_risk_score_breakdown(attention_df)
 
     with trends_tab:
+        st.caption(
+            "Weekly trends use the selected sidebar filters and compare week-end snapshots only."
+        )
         show_trend_charts(filtered_df)
 
-    with detail_tab:
+    with attention_tab:
         show_suppliers_requiring_attention(attention_df)
 
 

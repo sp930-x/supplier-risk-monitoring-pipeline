@@ -134,7 +134,10 @@ In a production setting, these weights and thresholds should be calibrated with 
 |   +-- load_raw_to_snowflake.py
 |   +-- test_snowflake_connection.py
 +-- tests/
-|   +-- test_*.sql
+|   +-- staging/
+|   |   +-- test_stg_*.sql
+|   +-- marts/
+|   |   +-- test_mart_*.sql
 +-- dbt_project.yml
 +-- docker-compose.yaml
 +-- Dockerfile
@@ -239,16 +242,16 @@ docker compose up airflow-init
 docker compose up -d
 ```
 
-The DAG runs daily at 09:00 Europe/Berlin time and processes the completed previous day as the `batch_date`.
+The DAG runs daily at 03:00 Europe/Berlin time. Its Airflow logical date is used directly as the `batch_date`.
 
-For example, the run at `2026-07-01 09:00` creates and loads `batch_date=2026-06-30`, then refreshes the dbt mart so the dashboard reflects data up to the previous day.
+For example, an Airflow run with logical date `2026-07-01` creates and loads `batch_date=2026-07-01`, then refreshes the dbt mart and runs the dbt tests.
 
-Manual DAG triggers from the Airflow UI also use the completed previous day, so triggering the DAG on `2026-06-30` creates and loads `batch_date=2026-06-29` instead of today's partial data.
+Catchup is enabled and `max_active_runs=1`, so historical days are processed one date at a time in order.
 
 The Airflow task chain is:
 
 ```text
-generate_day -> validate_day -> load_day -> dbt run -> dbt test
+generate_synthetic_batch -> validate_generated_batch -> load_raw_to_snowflake -> dbt_run -> dbt_test
 ```
 
 ## Run The Streamlit Dashboard
@@ -272,11 +275,11 @@ The dashboard includes:
 - an `Executive Summary` tab with KPI cards, the top priority supplier, risk level distribution, and high-risk driver distribution
 - a `Risk Drivers` tab showing why suppliers are flagged, including the main driver and weighted risk score breakdown
 - a `Weekly Trends` tab for open overdue orders, average risk score, and delayed order value at week-end snapshots
-- a `Supplier Detail` tab with high-risk suppliers on the selected report week's latest snapshot
+- a `Suppliers Requiring Attention` tab with high- and medium-risk suppliers on the selected report week's Sunday snapshot
 
 The dashboard applies the sidebar filters consistently across KPIs, charts, and tables. The visual design uses a muted risk palette and gradient-style risk intensity charting so high-risk suppliers stand out without relying on overly saturated colors.
 
-The report week uses `Week 1`, `Week 2`, and similar labels in charts, with the available date range shown in the filter and chart hover details. For partial weeks, the date range ends at the latest available snapshot rather than the calendar week end. This keeps the underlying mart daily while presenting the dashboard in a weekly reporting format.
+Report weeks use complete Monday-to-Sunday calendar ranges, such as `2026-06-29 to 2026-07-05`. Partial weeks are excluded from the weekly report until all seven daily snapshots are available.
 
 The dashboard reads from the final dbt mart table in Snowflake. The mart is refreshed by the Airflow pipeline.
 

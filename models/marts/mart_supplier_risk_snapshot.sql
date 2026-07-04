@@ -119,13 +119,73 @@ scored as (
         total_order_value,
         delayed_order_value,
         coalesce(delayed_order_value_share, 0) as delayed_order_value_share,
-        coalesce(late_delivery_rate, 0) * 0.4
-            + coalesce(low_review_rate, 0) * 0.3
-            + coalesce(delayed_order_value_share, 0) * 0.3 as risk_score
+        coalesce(late_delivery_rate, 0) * 0.4 as risk_score_delivery_component,
+        coalesce(low_review_rate, 0) * 0.3 as risk_score_review_component,
+        coalesce(delayed_order_value_share, 0) * 0.3 as risk_score_value_component
     from seller_metrics
+),
+
+scored_with_total as (
+    select
+        *,
+        risk_score_delivery_component
+            + risk_score_review_component
+            + risk_score_value_component as risk_score
+    from scored
+),
+
+labeled as (
+    select
+        *,
+        case
+            when risk_score_delivery_component >= risk_score_review_component
+                and risk_score_delivery_component >= risk_score_value_component
+                then 'Delivery'
+            when risk_score_review_component >= risk_score_value_component
+                then 'Reviews'
+            else 'Value exposure'
+        end as primary_risk_driver,
+        'Delivery ' || round(late_delivery_rate * 100, 0)::varchar
+            || '% | Reviews ' || round(low_review_rate * 100, 0)::varchar
+            || '% | Value ' || round(delayed_order_value_share * 100, 0)::varchar
+            || '%' as risk_reason
+    from scored_with_total
+),
+
+reporting_calendar_base as (
+    select
+        *,
+        dateadd('day', 1 - dayofweekiso(snapshot_date), snapshot_date) as report_week_start,
+        dateadd(
+            'day',
+            7 - dayofweekiso(snapshot_date),
+            snapshot_date
+        ) as report_week_end
+    from labeled
+),
+
+reporting_week_coverage as (
+    select
+        report_week_start,
+        count(distinct snapshot_date) as reporting_week_snapshot_days
+    from reporting_calendar_base
+    group by report_week_start
+),
+
+reporting_calendar as (
+    select
+        base.*,
+        coverage.reporting_week_snapshot_days
+    from reporting_calendar_base as base
+    inner join reporting_week_coverage as coverage
+        on base.report_week_start = coverage.report_week_start
 )
 
 select
+    report_week_start,
+    report_week_end,
+    reporting_week_snapshot_days,
+    reporting_week_snapshot_days = 7 as is_complete_reporting_week,
     snapshot_date,
     seller_id,
     total_orders,
@@ -142,10 +202,15 @@ select
     total_order_value,
     delayed_order_value,
     delayed_order_value_share,
+    risk_score_delivery_component,
+    risk_score_review_component,
+    risk_score_value_component,
     risk_score,
+    primary_risk_driver,
+    risk_reason,
     case
         when risk_score >= 0.7 then 'high'
         when risk_score >= 0.4 then 'medium'
         else 'low'
     end as risk_level
-from scored
+from reporting_calendar

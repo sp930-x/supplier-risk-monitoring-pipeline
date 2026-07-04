@@ -217,9 +217,15 @@ def build_order_lifecycle(
     )
 
     carrier_days = int(rng.integers(1, 5))
-    delivered_carrier_date = purchase_ts + timedelta(days=carrier_days)
+    delivered_carrier_date = max(
+        approved_at + timedelta(hours=float(rng.uniform(1, 12))),
+        purchase_ts + timedelta(days=carrier_days),
+    )
     if delivered_customer_date is not None and delivered_customer_date <= delivered_carrier_date:
-        delivered_carrier_date = delivered_customer_date - timedelta(days=1)
+        delivered_carrier_date = max(
+            approved_at + timedelta(hours=1),
+            delivered_customer_date - timedelta(hours=12),
+        )
 
     n_items = int(rng.choice([1, 2, 3], p=[0.82, 0.15, 0.03]))
     items = []
@@ -282,6 +288,11 @@ def add_order_snapshot_rows(
 ) -> None:
     delivered_customer_date = lifecycle["delivered_customer_date"]
     delivered_carrier_date = lifecycle["delivered_carrier_date"]
+    approved_visible = (
+        lifecycle["approved_at"]
+        if lifecycle["approved_at"] <= snapshot_end
+        else None
+    )
 
     delivered_visible = (
         delivered_customer_date
@@ -307,7 +318,7 @@ def add_order_snapshot_rows(
             "customer_id": lifecycle["customer_id"],
             "order_status": order_status,
             "order_purchase_timestamp": lifecycle["purchase_ts"],
-            "order_approved_at": min(lifecycle["approved_at"], snapshot_end),
+            "order_approved_at": approved_visible,
             "order_delivered_carrier_date": carrier_visible,
             "order_delivered_customer_date": delivered_visible,
             "order_estimated_delivery_date": lifecycle["estimated_delivery_date"],
@@ -346,6 +357,12 @@ def add_order_snapshot_rows(
 
     review_creation_date = lifecycle["review_creation_date"]
     if review_creation_date is not None and review_creation_date <= snapshot_end:
+        review_answer_timestamp = lifecycle["review_answer_timestamp"]
+        answer_visible = (
+            review_answer_timestamp
+            if review_answer_timestamp is not None and review_answer_timestamp <= snapshot_end
+            else None
+        )
         reviews_rows.append(
             {
                 "review_id": lifecycle["review_id"],
@@ -354,10 +371,7 @@ def add_order_snapshot_rows(
                 "review_comment_title": None,
                 "review_comment_message": None,
                 "review_creation_date": review_creation_date,
-                "review_answer_timestamp": min(
-                    lifecycle["review_answer_timestamp"],
-                    snapshot_end,
-                ),
+                "review_answer_timestamp": answer_visible,
                 "source_type": "synthetic",
                 "batch_date": batch_date,
             }
