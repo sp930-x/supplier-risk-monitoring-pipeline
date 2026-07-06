@@ -130,7 +130,18 @@ scored_with_total as (
         *,
         risk_score_delivery_component
             + risk_score_review_component
-            + risk_score_value_component as risk_score
+            + risk_score_value_component as raw_risk_score,
+        (
+            risk_score_delivery_component
+            + risk_score_review_component
+            + risk_score_value_component
+        )
+        * case
+            when total_orders < 5 then 0.35
+            when total_orders < 10 then 0.50
+            when total_orders < 15 then 0.85
+            else 1.00
+        end as risk_score
     from scored
 ),
 

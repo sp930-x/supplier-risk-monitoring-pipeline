@@ -79,6 +79,7 @@ def create_seller_risk_profiles(
     seed: int = 42,
     high_risk_share: float = 0.12,
     medium_risk_share: float = 0.25,
+    active_seller_share: float = 0.05,
 ) -> pd.DataFrame:
     """
     Create stable synthetic risk profiles for sellers.
@@ -91,31 +92,102 @@ def create_seller_risk_profiles(
 
     profiles = []
 
+    active_seller_count = max(40, int(len(seller_ids) * active_seller_share))
+    active_seller_ids = set(
+        rng.choice(
+            seller_ids,
+            size=min(active_seller_count, len(seller_ids)),
+            replace=False,
+        )
+    )
+
     for seller_id in seller_ids:
         r = rng.random()
 
         if r < high_risk_share:
             risk_cluster = "high"
-            delay_probability = rng.uniform(0.35, 0.65)
-            delay_severity = rng.uniform(3.0, 6.0)
+            risk_theme = str(
+                rng.choice(
+                    ["Delivery", "Reviews", "Value exposure"],
+                    p=[0.55, 0.20, 0.25],
+                )
+            )
         elif r < high_risk_share + medium_risk_share:
             risk_cluster = "medium"
-            delay_probability = rng.uniform(0.15, 0.35)
-            delay_severity = rng.uniform(2.0, 4.0)
+            risk_theme = str(
+                rng.choice(
+                    ["Delivery", "Reviews", "Value exposure"],
+                    p=[0.50, 0.25, 0.25],
+                )
+            )
         else:
             risk_cluster = "low"
-            delay_probability = rng.uniform(0.03, 0.15)
-            delay_severity = rng.uniform(1.0, 2.5)
+            risk_theme = str(
+                rng.choice(
+                    ["Delivery", "Reviews", "Value exposure"],
+                    p=[0.45, 0.30, 0.25],
+                )
+            )
 
-        # Some sellers receive more orders than others.
-        order_weight = rng.lognormal(mean=0.0, sigma=1.0)
+        if risk_cluster == "high" and risk_theme == "Delivery":
+            delay_probability = rng.uniform(0.88, 0.98)
+            delay_severity = rng.uniform(5.0, 8.5)
+            review_issue_probability = rng.uniform(0.55, 0.75)
+            value_multiplier = rng.uniform(1.8, 2.8)
+        elif risk_cluster == "high" and risk_theme == "Reviews":
+            delay_probability = rng.uniform(0.62, 0.82)
+            delay_severity = rng.uniform(3.0, 5.5)
+            review_issue_probability = rng.uniform(0.82, 0.94)
+            value_multiplier = rng.uniform(1.5, 2.2)
+        elif risk_cluster == "high":
+            delay_probability = rng.uniform(0.78, 0.92)
+            delay_severity = rng.uniform(3.5, 6.5)
+            review_issue_probability = rng.uniform(0.50, 0.70)
+            value_multiplier = rng.uniform(3.5, 5.5)
+        elif risk_cluster == "medium" and risk_theme == "Delivery":
+            delay_probability = rng.uniform(0.28, 0.48)
+            delay_severity = rng.uniform(2.5, 4.5)
+            review_issue_probability = rng.uniform(0.10, 0.25)
+            value_multiplier = rng.uniform(1.0, 1.5)
+        elif risk_cluster == "medium" and risk_theme == "Reviews":
+            delay_probability = rng.uniform(0.16, 0.32)
+            delay_severity = rng.uniform(1.8, 3.5)
+            review_issue_probability = rng.uniform(0.35, 0.55)
+            value_multiplier = rng.uniform(1.0, 1.4)
+        elif risk_cluster == "medium":
+            delay_probability = rng.uniform(0.18, 0.35)
+            delay_severity = rng.uniform(1.8, 3.8)
+            review_issue_probability = rng.uniform(0.12, 0.28)
+            value_multiplier = rng.uniform(1.8, 2.8)
+        else:
+            delay_probability = rng.uniform(0.03, 0.14)
+            delay_severity = rng.uniform(1.0, 2.4)
+            review_issue_probability = rng.uniform(0.03, 0.12)
+            value_multiplier = rng.uniform(0.9, 1.3)
+
+        # Demo anchor suppliers receive enough repeat orders to make weekly
+        # supplier-level risk scores more stable without removing long-tail noise.
+        is_active_seller = seller_id in active_seller_ids
+        if is_active_seller:
+            if risk_cluster == "high":
+                order_weight = rng.lognormal(mean=2.0, sigma=0.45)
+            elif risk_cluster == "medium":
+                order_weight = rng.lognormal(mean=1.55, sigma=0.45)
+            else:
+                order_weight = rng.lognormal(mean=0.8, sigma=0.55)
+        else:
+            order_weight = rng.lognormal(mean=-4.0, sigma=0.6)
 
         profiles.append(
             {
                 "seller_id": seller_id,
                 "risk_cluster": risk_cluster,
+                "risk_theme": risk_theme,
                 "delay_probability": round(float(delay_probability), 4),
                 "delay_severity": round(float(delay_severity), 4),
+                "review_issue_probability": round(float(review_issue_probability), 4),
+                "value_multiplier": round(float(value_multiplier), 4),
+                "is_active_seller": is_active_seller,
                 "order_weight": round(float(order_weight), 4),
             }
         )
@@ -128,12 +200,19 @@ def create_seller_risk_profiles(
     return profiles_df
 
 
-def pick_review_score(rng: np.random.Generator, delay_days: int) -> int:
+def pick_review_score(
+    rng: np.random.Generator,
+    delay_days: int,
+    review_issue_probability: float,
+) -> int:
     """
     Delay influences review score.
     This gives the synthetic data a realistic business relationship:
     late delivery usually increases the chance of low reviews.
     """
+    if rng.random() < review_issue_probability:
+        return int(rng.choice([1, 2, 3], p=[0.36, 0.44, 0.20]))
+
     if delay_days <= 0:
         return int(rng.choice([3, 4, 5], p=[0.12, 0.35, 0.53]))
 
@@ -197,6 +276,9 @@ def build_order_lifecycle(
     profile = profile_lookup[seller_id]
     delay_probability = float(profile["delay_probability"])
     delay_severity = float(profile["delay_severity"])
+    review_issue_probability = float(profile.get("review_issue_probability", 0.08))
+    value_multiplier = float(profile.get("value_multiplier", 1.0))
+    risk_theme = str(profile.get("risk_theme", "Delivery"))
 
     purchase_ts = purchase_dt + timedelta(minutes=int(rng.integers(0, 1440)))
     approved_at = purchase_ts + timedelta(hours=float(rng.uniform(0.2, 12)))
@@ -232,6 +314,11 @@ def build_order_lifecycle(
     total_payment_value = 0.0
     for item_id in range(1, n_items + 1):
         price, freight = sample_price_and_freight(rng, order_items_ref)
+        if is_delayed and risk_theme == "Value exposure":
+            price = round(price * value_multiplier, 2)
+            freight = round(freight * min(value_multiplier, 2.0), 2)
+        elif is_delayed and rng.random() < 0.15:
+            price = round(price * rng.uniform(1.2, 1.8), 2)
         total_payment_value += price + freight
         items.append(
             {
@@ -256,6 +343,7 @@ def build_order_lifecycle(
         "customer_id": str(rng.choice(customer_ids)),
         "seller_id": seller_id,
         "seller_risk_cluster": profile["risk_cluster"],
+        "seller_risk_theme": risk_theme,
         "purchase_ts": purchase_ts,
         "approved_at": approved_at,
         "delivered_carrier_date": delivered_carrier_date,
@@ -271,7 +359,11 @@ def build_order_lifecycle(
         "payment_installments": int(rng.integers(1, 7)),
         "payment_value": round(total_payment_value, 2),
         "review_id": deterministic_id("review", purchase_date, order_idx, order_id),
-        "review_score": pick_review_score(rng, delay_days),
+        "review_score": pick_review_score(
+            rng,
+            delay_days,
+            review_issue_probability,
+        ),
         "review_creation_date": review_creation_date,
         "review_answer_timestamp": review_answer_timestamp,
     }

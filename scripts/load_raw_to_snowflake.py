@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +23,25 @@ except ImportError as exc:  # pragma: no cover - depends on local environment
     ) from exc
 
 from validate_generated_data import validate_batch
+
+
+def patch_windows_store_python_libc_ver() -> None:
+    """Avoid a Snowflake connector crash caused by the Windows Store Python shim."""
+    if os.name != "nt":
+        return
+
+    original_libc_ver = platform.libc_ver
+
+    def safe_libc_ver(executable: str | None = None, lib: str = "", version: str = ""):
+        try:
+            return original_libc_ver(executable, lib, version)
+        except OSError:
+            return "", ""
+
+    platform.libc_ver = safe_libc_ver
+
+
+patch_windows_store_python_libc_ver()
 
 
 REQUIRED_FILES = {
